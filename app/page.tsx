@@ -1,7 +1,7 @@
 "use client"
 
 import type React from "react"
-
+import { v4 as uuidv4 } from "uuid"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { Card, CardContent } from "@/components/ui/card"
@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Checkbox } from "@/components/ui/checkbox"
+import { VisuallyHidden } from "@radix-ui/react-visually-hidden"
 import {
   Flame,
   Zap,
@@ -27,8 +28,13 @@ import {
 } from "lucide-react"
 import Image from "next/image"
 import Link from "next/link"
-import { useState, useEffect } from "react"
-
+import { useState, useEffect, useRef } from "react"
+import {
+  handleTracking,
+  trackLastButtonClicked,
+  trackPurchaseClick,
+  initializeAdvancedTracking,
+} from "./tracking" // Importar funções de tracking avançado
 
 export default function FirePowerLanding() {
   const [showInactivityModal, setShowInactivityModal] = useState(false)
@@ -37,6 +43,11 @@ export default function FirePowerLanding() {
   const [selectedImage, setSelectedImage] = useState<{ src: string; alt: string; message: string } | null>(null)
   const [currentSlide, setCurrentSlide] = useState(0)
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [inactivityOfferTime, setInactivityOfferTime] = useState({
+    minutes: 3,
+    seconds: 0,
+  })
+
 
   const [feedbackData, setFeedbackData] = useState({
     name: "",
@@ -54,6 +65,8 @@ export default function FirePowerLanding() {
     minutes: 47,
     seconds: 32,
   })
+
+  const offerSectionRef = useRef(null) // Ref para a seção de oferta
 
   // Dados das imagens dos depoimentos
   const testimonialImages = [
@@ -94,28 +107,96 @@ export default function FirePowerLanding() {
     },
   ]
 
+  // Inicialização do tracking avançado e listeners
+  useEffect(() => {
+    initializeAdvancedTracking();
+
+    // Observer para view_offer_section
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            handleTracking("view_offer_section", { sectionId: "offer" })
+            observer.unobserve(entry.target) // Disparar apenas uma vez
+          }
+        })
+      },
+      { threshold: 0.5 } // Pelo menos 50% visível
+    )
+
+    if (offerSectionRef.current) {
+      observer.observe(offerSectionRef.current)
+    }
+
+    return () => {
+      // Limpeza de listeners já é feita dentro de initializeAdvancedTracking
+      if (offerSectionRef.current) {
+        observer.unobserve(offerSectionRef.current)
+      }
+    }
+  }, [])
+
   const nextSlide = () => {
     setCurrentSlide((prev) => (prev + 1) % Math.ceil(testimonialImages.length / 3))
+    handleTracking("click_cta", { buttonId: "next_testimonial_slide", buttonText: "Próximo Depoimento" })
+    trackLastButtonClicked("next_testimonial_slide", "Próximo Depoimento")
   }
 
   const prevSlide = () => {
     setCurrentSlide(
       (prev) => (prev - 1 + Math.ceil(testimonialImages.length / 3)) % Math.ceil(testimonialImages.length / 3),
     )
+    handleTracking("click_cta", { buttonId: "prev_testimonial_slide", buttonText: "Depoimento Anterior" })
+    trackLastButtonClicked("prev_testimonial_slide", "Depoimento Anterior")
   }
 
   const openImageModal = (image: { src: string; alt: string; message: string }) => {
     setSelectedImage(image)
     setShowImageModal(true)
+    handleTracking("testimonial_image_click", { imageSrc: image.src, imageAlt: image.alt })
+    handleTracking("modal_opened", { modalId: "image_modal" })
+  }
+
+  const closeImageModal = () => {
+    setShowImageModal(false)
+    handleTracking("modal_closed", { modalId: "image_modal" })
   }
 
   const scrollToSection = (sectionId: string) => {
     const element = document.getElementById(sectionId)
     if (element) {
       element.scrollIntoView({ behavior: "smooth", block: "start" })
+      handleTracking("scroll_to_section", { sectionId })
       setMobileMenuOpen(false)
     }
   }
+
+   // Add this useEffect after the existing countdown timer useEffect
+  useEffect(() => {
+    if (!showInactivityModal) return
+
+    const timer = setInterval(() => {
+      setInactivityOfferTime((prevTime) => {
+        let { minutes, seconds } = prevTime
+
+        if (seconds > 0) {
+          seconds--
+        } else if (minutes > 0) {
+          minutes--
+          seconds = 59
+        } else {
+          // Timer chegou a zero, fecha o modal
+          setShowInactivityModal(false)
+          return { minutes: 3, seconds: 0 } // Reset for next time
+        }
+
+        return { minutes, seconds }
+      })
+    }, 1000)
+
+    return () => clearInterval(timer)
+  }, [showInactivityModal])
+
 
   // Timer de inatividade
   useEffect(() => {
@@ -125,6 +206,7 @@ export default function FirePowerLanding() {
       if (timer) clearTimeout(timer)
       timer = setTimeout(() => {
         setShowInactivityModal(true)
+        handleTracking("modal_opened", { modalId: "inactivity_modal" })
       }, 30000) // 30 segundos de inatividade
     }
 
@@ -149,7 +231,7 @@ export default function FirePowerLanding() {
         document.removeEventListener(event, handleUserActivity, true)
       })
     }
-  }, [showInactivityModal]) // Apenas showInactivityModal como dependência
+  }, [showInactivityModal])
 
   // Timer de contagem regressiva
   useEffect(() => {
@@ -182,20 +264,60 @@ export default function FirePowerLanding() {
 
   const handleInactivityModalClose = () => {
     setShowInactivityModal(false)
+    handleTracking("modal_closed", { modalId: "inactivity_modal" })
     // Após 10 segundos, mostra o modal de feedback
     setTimeout(() => {
       setShowFeedbackModal(true)
-    }, 10000)
+      handleTracking("modal_opened", { modalId: "feedback_modal" })
+    }, 10)
+  }
+
+  const handleFeedbackModalClose = () => {
+    setShowFeedbackModal(false)
+    handleTracking("modal_closed", { modalId: "feedback_modal" })
   }
 
   const handleFeedbackSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (feedbackData.lgpdConsent) {
+      handleTracking("feedback_form_submit", { ...feedbackData })
       alert("Obrigado pelo seu feedback! Seus dados foram registrados com segurança.")
       setShowFeedbackModal(false)
+      handleTracking("modal_closed", { modalId: "feedback_modal", reason: "submit_success" })
     } else {
       alert("Por favor, aceite os termos de consentimento para continuar.")
+      handleTracking("feedback_form_submit_failed", { reason: "lgpd_not_accepted" })
     }
+  }
+
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
+    const { name, value, type } = e.target
+    const checked = (e.target as HTMLInputElement).checked
+
+    setFeedbackData((prev) => ({
+      ...prev,
+      [name]: type === "checkbox" ? checked : value,
+    }))
+  }
+
+  const handleSelectChange = (value: string) => {
+    setFeedbackData((prev) => ({
+      ...prev,
+      reason: value,
+    }))
+  }
+
+  const handleCheckboxChange = (checked: boolean | "indeterminate", name: string) => {
+    setFeedbackData((prev) => ({
+      ...prev,
+      [name]: checked === true,
+    }))
+  }
+
+  // Função genérica para rastrear cliques em botões (usando handleTracking)
+  const trackButtonClick = (buttonId: string, buttonText: string, additionalData = {}) => {
+    handleTracking("click_cta", { buttonId, buttonText, ...additionalData })
+    trackLastButtonClicked(buttonId, buttonText)
   }
 
   return (
@@ -208,11 +330,15 @@ export default function FirePowerLanding() {
 
       {/* Header com navegação fixa */}
       <header className="px-4 lg:px-6 h-16 flex items-center border-b border-red-800/50 bg-black/90 backdrop-blur-md sticky top-0 z-50 shadow-lg shadow-red-900/20">
-        <Link href="/" className="flex items-center justify-center gap-2 group">
+        <Link
+          href="/"
+          className="flex items-center justify-center gap-2 group"
+          onClick={() => trackButtonClick("header_logo_link", "Logo Fire Power")}
+        >
           <div className="p-2 bg-gradient-to-r from-red-600 to-red-800 rounded-lg group-hover:scale-110 transition-transform duration-300 shadow-lg shadow-red-600/30">
             <Flame className="h-6 w-6 text-white" />
           </div>
-          <span className="text-xl font-bold bg-gradient-to-r from-red-400 via-yellow-400 to-red-400 bg-clip-text text-transparent animate-pulse">
+          <span className="text-xl font-bold bg-gradient-to-r from-red-400 via-yellow-400 to-red-400 bg-clip-text text-transparent animate_pulse">
             Fire Power
           </span>
         </Link>
@@ -220,21 +346,30 @@ export default function FirePowerLanding() {
         {/* Desktop Navigation */}
         <nav className="ml-auto hidden md:flex gap-6">
           <button
-            onClick={() => scrollToSection("benefits")}
+            onClick={() => {
+              scrollToSection("benefits")
+              trackButtonClick("nav_benefits", "Benefícios")
+            }}
             className="text-sm font-medium text-white hover:text-red-400 transition-all duration-300 hover:scale-105 relative group"
           >
             Benefícios
             <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-red-400 transition-all duration-300 group-hover:w-full"></span>
           </button>
           <button
-            onClick={() => scrollToSection("testimonials")}
+            onClick={() => {
+              scrollToSection("testimonials")
+              trackButtonClick("nav_testimonials", "Depoimentos")
+            }}
             className="text-sm font-medium text-white hover:text-red-400 transition-all duration-300 hover:scale-105 relative group"
           >
             Depoimentos
             <span className="absolute -bottom-1 left-0 w-0 h-0.5 bg-red-400 transition-all duration-300 group-hover:w-full"></span>
           </button>
           <button
-            onClick={() => scrollToSection("offer")}
+            onClick={() => {
+              scrollToSection("offer")
+              trackButtonClick("nav_offer", "Oferta")
+            }}
             className="text-sm font-medium text-white hover:text-red-400 transition-all duration-300 hover:scale-105 relative group"
           >
             Oferta
@@ -245,7 +380,10 @@ export default function FirePowerLanding() {
         {/* Mobile Menu Button */}
         <button
           className="ml-auto md:hidden p-2 text-white hover:text-red-400 transition-colors"
-          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+          onClick={() => {
+            setMobileMenuOpen(!mobileMenuOpen)
+            trackButtonClick("mobile_menu_toggle", mobileMenuOpen ? "Fechar Menu" : "Abrir Menu")
+          }}
         >
           <Menu className="h-6 w-6" />
         </button>
@@ -255,19 +393,28 @@ export default function FirePowerLanding() {
           <div className="absolute top-16 left-0 right-0 bg-black/95 backdrop-blur-md border-b border-red-800/50 md:hidden animate-in slide-in-from-top duration-300">
             <nav className="flex flex-col p-4 space-y-4">
               <button
-                onClick={() => scrollToSection("benefits")}
+                onClick={() => {
+                  scrollToSection("benefits")
+                  trackButtonClick("mobile_nav_benefits", "Benefícios (Mobile)")
+                }}
                 className="text-left text-white hover:text-red-400 transition-colors py-2"
               >
                 Benefícios
               </button>
               <button
-                onClick={() => scrollToSection("testimonials")}
+                onClick={() => {
+                  scrollToSection("testimonials")
+                  trackButtonClick("mobile_nav_testimonials", "Depoimentos (Mobile)")
+                }}
                 className="text-left text-white hover:text-red-400 transition-colors py-2"
               >
                 Depoimentos
               </button>
               <button
-                onClick={() => scrollToSection("offer")}
+                onClick={() => {
+                  scrollToSection("offer")
+                  trackButtonClick("mobile_nav_offer", "Oferta (Mobile)")
+                }}
                 className="text-left text-white hover:text-red-400 transition-colors py-2"
               >
                 Oferta
@@ -279,7 +426,7 @@ export default function FirePowerLanding() {
 
       <main className="flex-1">
         {/* Hero Section */}
-        <section className="w-full py-8 md:py-16 lg:py-24 xl:py-32 relative overflow-hidden">
+        <section id="hero" className="w-full py-8 md:py-16 lg:py-24 xl:py-32 relative overflow-hidden">
           {/* Background com texturas premium */}
           <div className="absolute inset-0">
             <div className="absolute inset-0 bg-gradient-to-br from-red-600/30 via-black/80 to-red-800/40"></div>
@@ -323,7 +470,10 @@ export default function FirePowerLanding() {
                   <Button
                     size="lg"
                     className="bg-gradient-to-r from-red-600 via-red-700 to-red-800 hover:from-red-700 hover:via-red-800 hover:to-red-900 text-white font-bold text-sm sm:text-base lg:text-lg py-4 sm:py-6 w-full sm:flex-1 shadow-xl shadow-red-600/30 hover:shadow-red-600/50 hover:scale-105 transition-all duration-300 animate-pulse"
-                    onClick={() => scrollToSection("offer")}
+                    onClick={() => {
+                      scrollToSection("offer")
+                      trackButtonClick("hero_cta_potencia", "QUERO MINHA POTÊNCIA AGORA!")
+                    }}
                   >
                     QUERO MINHA POTÊNCIA AGORA!
                     <ArrowRight className="ml-2 h-4 w-4 sm:h-5 sm:w-5 group-hover:translate-x-1 transition-transform" />
@@ -332,7 +482,10 @@ export default function FirePowerLanding() {
                     variant="outline"
                     size="lg"
                     className="border-red-400 text-red-400 hover:bg-red-900/20 py-4 sm:py-6 text-sm sm:text-base w-full sm:flex-1 backdrop-blur-sm hover:scale-105 transition-all duration-300"
-                    onClick={() => scrollToSection("testimonials")}
+                    onClick={() => {
+                      scrollToSection("testimonials")
+                      trackButtonClick("hero_cta_depoimentos", "Ver Depoimentos Reais")
+                    }}
                   >
                     Ver Depoimentos Reais
                   </Button>
@@ -404,96 +557,79 @@ export default function FirePowerLanding() {
           </div>
         </section>
 
-        {/* Prova Social com animações */}
-        <section className="w-full py-12 bg-black/90 border-y border-red-800/50 backdrop-blur-sm relative overflow-hidden">
-          <div className="absolute inset-0 bg-gradient-to-r from-red-900/10 to-transparent"></div>
-          <div className="container px-4 md:px-6 relative z-10">
-            <div className="text-center mb-8 animate-in fade-in slide-in-from-bottom duration-700">
-              <h3 className="text-2xl font-bold text-white mb-2 drop-shadow-lg">
-                MAIS DE 50.000 HOMENS JÁ TRANSFORMARAM SUAS VIDAS
-              </h3>
-              <p className="text-red-400">Junte-se aos homens que recuperaram sua confiança</p>
-            </div>
-            <div className="grid grid-cols-2 md:grid-cols-5 gap-8">
-              {[
-                { number: "50K+", label: "Homens Satisfeitos", delay: "0ms" },
-                { number: "98%", label: "Taxa de Sucesso", delay: "100ms" },
-                { number: "30min", label: "Tempo de Ação", delay: "200ms" },
-                { number: "7 dias", label: "Garantia Total", delay: "300ms" },
-                { number: "0%", label: "Risco - Pague ao Receber", delay: "400ms" },
-              ].map((stat, index) => (
-                <div
-                  key={index}
-                  className="text-center group animate-in fade-in slide-in-from-bottom duration-500"
-                  style={{ animationDelay: stat.delay }}
-                >
-                  <div className="text-3xl font-bold text-red-400 group-hover:scale-110 transition-transform duration-300 drop-shadow-lg">
-                    {stat.number}
-                  </div>
-                  <div className="text-sm text-gray-400">{stat.label}</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* Benefits Section com animações */}
-        <section id="benefits" className="w-full py-12 md:py-24 lg:py-32 relative overflow-hidden">
-          <div className="absolute inset-0 bg-gradient-to-br from-red-900/20 to-transparent"></div>
-          <div className="container px-4 md:px-6 relative z-10">
+        {/* Benefits Section */}
+        <section id="benefits" className="w-full py-12 md:py-24 lg:py-32 bg-black/80 backdrop-blur-sm">
+          <div className="container px-4 md:px-6">
             <div className="flex flex-col items-center justify-center space-y-4 text-center mb-12 animate-in fade-in slide-in-from-bottom duration-700">
               <div className="space-y-2">
+                <div className="flex items-center justify-center gap-3 mb-4">
+                  <Zap className="h-8 w-8 text-yellow-400 animate-pulse" />
+                  <Badge className="bg-yellow-500 text-black font-bold text-lg px-4 py-2 shadow-lg shadow-yellow-500/30 hover:scale-105 transition-transform duration-300">
+                    BENEFÍCIOS EXCLUSIVOS
+                  </Badge>
+                </div>
                 <h2 className="text-3xl font-bold tracking-tighter sm:text-5xl text-white drop-shadow-2xl">
-                  TRANSFORME SUA PERFORMANCE EM <span className="text-red-400 animate-pulse">30 MINUTOS</span>
+                  POR QUE FIRE POWER É O Nº 1 DO BRASIL?
                 </h2>
                 <p className="max-w-[900px] text-gray-300 md:text-xl/relaxed">
-                  Descubra os benefícios que farão você se sentir um HOMEM DE VERDADE novamente
+                  Descubra como nossa fórmula exclusiva pode transformar sua vida sexual e sua confiança.
                 </p>
               </div>
             </div>
-            <div className="mx-auto grid max-w-5xl items-start gap-6 py-12 lg:grid-cols-3 lg:gap-12">
+            <div className="mx-auto grid items-start gap-8 sm:max-w-4xl sm:grid-cols-2 md:gap-12 lg:max-w-5xl lg:grid-cols-3">
               {[
                 {
-                  icon: Zap,
-                  title: "EREÇÃO PODEROSA",
-                  description:
-                    "Ereções mais firmes, duradouras e potentes. Sinta-se confiante e no controle total da situação.",
+                  icon: Flame,
+                  title: "Máxima Potência",
+                  description: "Ereções mais firmes e duradouras como nunca antes.",
                   delay: "0ms",
                 },
                 {
-                  icon: Flame,
-                  title: "LIBIDO EXPLOSIVA",
-                  description:
-                    "Desperte o desejo sexual que você tinha aos 20 anos. Volte a ser o homem que ela deseja.",
-                  delay: "200ms",
+                  icon: Clock,
+                  title: "Ação Rápida",
+                  description: "Sinta os efeitos em apenas 30 minutos após o uso.",
+                  delay: "100ms",
                 },
                 {
                   icon: TrendingUp,
-                  title: "RESISTÊNCIA MÁXIMA",
-                  description:
-                    "Performance prolongada e resistência que impressiona. Satisfaça completamente sua parceira.",
+                  title: "Aumento do Desejo",
+                  description: "Recupere a libido e o apetite sexual.",
+                  delay: "200ms",
+                },
+                {
+                  icon: Zap,
+                  title: "Mais Energia",
+                  description: "Tenha mais disposição para momentos íntimos prolongados.",
+                  delay: "300ms",
+                },
+                {
+                  icon: CheckCircle,
+                  title: "Controle Total",
+                  description: "Domine o momento e surpreenda na hora H.",
                   delay: "400ms",
                 },
+                {
+                  icon: Users,
+                  title: "Confiança Renovada",
+                  description: "Sinta-se mais seguro e potente em qualquer situação.",
+                  delay: "500ms",
+                },
               ].map((benefit, index) => (
-                <Card
+                <div
                   key={index}
-                  className="border-red-800/50 bg-black/50 backdrop-blur-sm hover:shadow-lg hover:shadow-red-500/20 transition-all duration-500 group hover:scale-105 animate-in fade-in slide-in-from-bottom"
+                  className="grid gap-1 group animate-in fade-in slide-in-from-bottom duration-500"
                   style={{ animationDelay: benefit.delay }}
                 >
-                  <CardContent className="p-6">
-                    <div className="flex items-center gap-4 mb-4">
-                      <div className="p-2 bg-gradient-to-r from-red-600 to-red-800 rounded-lg group-hover:scale-110 transition-transform duration-300 shadow-lg shadow-red-600/30">
-                        <benefit.icon className="h-6 w-6 text-white" />
-                      </div>
-                      <h3 className="text-xl font-bold text-white group-hover:text-red-400 transition-colors duration-300">
-                        {benefit.title}
-                      </h3>
+                  <div className="flex items-center gap-3 mb-2">
+                    <div className="p-2 bg-gradient-to-r from-red-600 to-red-800 rounded-lg group-hover:scale-110 transition-transform duration-300 shadow-lg shadow-red-600/30">
+                      <benefit.icon className="h-6 w-6 text-white" />
                     </div>
-                    <p className="text-gray-300 group-hover:text-white transition-colors duration-300">
-                      {benefit.description}
-                    </p>
-                  </CardContent>
-                </Card>
+                    <h3 className="text-lg font-bold text-white group-hover:text-red-400 transition-colors duration-300">
+                      {benefit.title}
+                    </h3>
+                  </div>
+                  <p className="text-sm text-gray-300">{benefit.description}</p>
+                </div>
               ))}
             </div>
           </div>
@@ -642,10 +778,12 @@ export default function FirePowerLanding() {
                 {Array.from({ length: Math.ceil(testimonialImages.length / 3) }).map((_, index) => (
                   <button
                     key={index}
-                    className={`w-3 h-3 rounded-full transition-all duration-300 hover:scale-125 ${
-                      index === currentSlide ? "bg-green-400 shadow-lg shadow-green-400/50" : "bg-gray-600"
-                    }`}
-                    onClick={() => setCurrentSlide(index)}
+                    className={`w-3 h-3 rounded-full transition-all duration-300 hover:scale-125 ${index === currentSlide ? "bg-green-400 shadow-lg shadow-green-400/50" : "bg-gray-600"
+                      }`}
+                    onClick={() => {
+                      setCurrentSlide(index)
+                      trackButtonClick(`testimonial_indicator_${index}`, `Indicador Depoimento ${index + 1}`)
+                    }}
                   />
                 ))}
               </div>
@@ -670,7 +808,7 @@ export default function FirePowerLanding() {
         </section>
 
         {/* Seção Pague ao Receber */}
-        <section className="w-full py-12 bg-gradient-to-r from-green-900/20 to-black border-y border-green-800/50 backdrop-blur-sm">
+        <section id="pay-on-delivery" className="w-full py-12 bg-gradient-to-r from-green-900/20 to-black border-y border-green-800/50 backdrop-blur-sm">
           <div className="container px-4 md:px-6">
             <div className="text-center space-y-6 animate-in fade-in slide-in-from-bottom duration-700">
               <div className="inline-flex items-center gap-3 bg-green-900/30 border border-green-600/50 rounded-full px-6 py-3 backdrop-blur-sm hover:scale-105 transition-transform duration-300 shadow-lg shadow-green-600/20">
@@ -717,6 +855,7 @@ export default function FirePowerLanding() {
         {/* Offer Section */}
         <section
           id="offer"
+          ref={offerSectionRef} // Adicionar ref aqui
           className="w-full py-12 md:py-24 lg:py-32 bg-gradient-to-r from-red-800/90 to-black backdrop-blur-sm"
         >
           <div className="container px-4 md:px-6">
@@ -734,6 +873,7 @@ export default function FirePowerLanding() {
               </div>
             </div>
             <div className="mx-auto grid max-w-5xl items-start gap-6 py-12 lg:grid-cols-3 lg:gap-12">
+              {/* Card 1: Teste Agora */}
               <Card className="border-gray-600/50 bg-black/50 backdrop-blur-sm hover:scale-105 transition-all duration-500 animate-in fade-in slide-in-from-left duration-700">
                 <CardContent className="p-6">
                   <div className="text-center space-y-4">
@@ -743,25 +883,26 @@ export default function FirePowerLanding() {
                       <br />
                       R$ 97<span className="text-sm font-normal">/frasco</span>
                     </div>
-                    <ul className="space-y-2 text-sm text-gray-300">
+                    <ul className="space-y-2 text-sm text-gray-300 text-left">
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-green-400" />1 Frasco (30 cápsulas)
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />1 Frasco (30 cápsulas)
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-green-400" />7 dias de garantia
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />7 dias de garantia
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-green-400" />
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />
                         Entrega discreta
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-yellow-400" />
+                        <CheckCircle className="h-4 w-4 text-yellow-400 flex-shrink-0" />
                         <strong className="text-yellow-400">PAGUE AO RECEBER</strong>
                       </li>
                     </ul>
                     <Button
                       variant="outline"
                       className="w-full border-red-400 text-red-400 hover:bg-red-900/20 hover:scale-105 transition-all duration-300"
+                      onClick={() => trackPurchaseClick("teste", "buy_teste", "QUERO TESTAR")}
                     >
                       QUERO TESTAR
                     </Button>
@@ -769,92 +910,84 @@ export default function FirePowerLanding() {
                 </CardContent>
               </Card>
 
-              <Card className="border-yellow-400/70 bg-gradient-to-b from-yellow-500/20 via-red-900/30 to-black relative transform hover:scale-110 transition-all duration-500 shadow-2xl shadow-yellow-500/30 animate-in fade-in slide-in-from-bottom duration-700 delay-200">
-                <div className="absolute -top-3 left-1/2 transform -translate-x-1/2">
-                  <Badge className="bg-yellow-500 text-black font-bold animate-pulse shadow-lg shadow-yellow-500/50">
-                    MAIS VENDIDO
-                  </Badge>
-                </div>
-                <CardContent className="p-6 bg-gradient-to-br from-red-600/30 via-yellow-600/20 to-red-800/30 border-2 border-yellow-400/70 shadow-2xl shadow-yellow-500/30 backdrop-blur-sm">
+              {/* Card 2: Potência Total (Mais Vendido) */}
+              <Card className="border-yellow-400/70 bg-gradient-to-b from-yellow-500/20 via-black/70 to-black/70 backdrop-blur-sm scale-105 shadow-2xl shadow-yellow-500/30 relative animate-in fade-in slide-in-from-bottom duration-700 delay-200">
+                <Badge className="absolute -top-3 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-yellow-400 to-yellow-600 text-black font-bold px-4 py-1 rounded-full shadow-lg shadow-yellow-500/40 animate-pulse">
+                  MAIS VENDIDO
+                </Badge>
+                <CardContent className="p-6 pt-10">
                   <div className="text-center space-y-4">
-                    <h3 className="text-2xl font-bold text-yellow-400 drop-shadow-lg animate-pulse">POTÊNCIA TOTAL</h3>
-                    <div className="text-4xl font-bold text-yellow-400 drop-shadow-lg">
-                      <span className="line-through text-gray-400 text-xl">R$ 591</span>
+                    <h3 className="text-xl font-bold text-yellow-400">POTÊNCIA TOTAL</h3>
+                    <div className="text-3xl font-bold text-white">
+                      <span className="line-through text-gray-500 text-lg">R$ 591</span>
                       <br />
-                      <span className="bg-gradient-to-r from-yellow-400 to-red-400 bg-clip-text text-transparent">
-                        R$ 197
-                      </span>
-                      <span className="text-lg font-normal text-white">/total</span>
+                      R$ 197<span className="text-sm font-normal"> (R$ 65/frasco)</span>
                     </div>
-                    <div className="text-green-400 font-bold text-lg drop-shadow-md bg-green-900/20 px-3 py-1 rounded-full border border-green-400/50 backdrop-blur-sm animate-pulse">
-                      ECONOMIZE R$ 394!
-                    </div>
-                    <ul className="space-y-3 text-base text-white">
+                    <ul className="space-y-2 text-sm text-gray-300 text-left">
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-5 w-5 text-green-400 flex-shrink-0" />
-                        <span>3 Frascos (90 cápsulas)</span>
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />
+                        <strong className="text-white">3 Frascos (90 cápsulas)</strong>
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-5 w-5 text-green-400 flex-shrink-0" />
-                        <span>7 dias de garantia</span>
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />
+                        <strong className="text-yellow-400">66% DE DESCONTO</strong>
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-5 w-5 text-green-400 flex-shrink-0" />
-                        <span>Frete GRÁTIS</span>
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />7 dias de garantia
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-5 w-5 text-green-400 flex-shrink-0" />
-                        <span>
-                          <strong className="text-yellow-400">BÔNUS:</strong> Guia do Prazer
-                        </span>
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />
+                        Entrega discreta
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-5 w-5 text-yellow-400 flex-shrink-0" />
-                        <span>
-                          <strong className="text-yellow-400">PAGUE AO RECEBER</strong>
-                        </span>
+                        <CheckCircle className="h-4 w-4 text-yellow-400 flex-shrink-0" />
+                        <strong className="text-yellow-400">PAGUE AO RECEBER</strong>
                       </li>
                     </ul>
-                    <Button className="w-full bg-gradient-to-r from-red-600 via-red-700 to-red-800 hover:from-red-700 hover:via-red-800 hover:to-red-900 font-bold text-lg py-6 shadow-lg border-2 border-yellow-400/70 text-yellow-100 animate-pulse hover:scale-105 transition-all duration-300">
+                  
+
+                      <Button className="w-full bg-gradient-to-r from-red-600 via-red-700 to-red-800 hover:from-red-700 hover:via-red-800 hover:to-red-900 font-bold text-lg py-6 shadow-lg border-2 border-yellow-400/70 text-yellow-100 animate-pulse hover:scale-105 transition-all duration-300" onClick={() => trackPurchaseClick("potencia_total", "buy_potencia_total", "QUERO POTÊNCIA TOTAL")}>
                       🔥 QUERO POTÊNCIA TOTAL! 🔥
                     </Button>
                   </div>
                 </CardContent>
               </Card>
 
+              {/* Card 3: Tratamento VIP */}
               <Card className="border-gray-600/50 bg-black/50 backdrop-blur-sm hover:scale-105 transition-all duration-500 animate-in fade-in slide-in-from-right duration-700 delay-400">
                 <CardContent className="p-6">
                   <div className="text-center space-y-4">
-                    <h3 className="text-xl font-bold text-white">GARANHÃO VIP</h3>
+                    <h3 className="text-xl font-bold text-white">TRATAMENTO VIP</h3>
                     <div className="text-3xl font-bold text-white">
-                      <span className="line-through text-gray-500 text-lg">R$ 1.182</span>
+                      <span className="line-through text-gray-500 text-lg">R$ 985</span>
                       <br />
-                      R$ 297<span className="text-sm font-normal">/total</span>
+                      R$ 297<span className="text-sm font-normal"> (R$ 59/frasco)</span>
                     </div>
-                    <div className="text-yellow-400 font-bold">ECONOMIZE R$ 885!</div>
-                    <ul className="space-y-2 text-sm text-gray-300">
+                    <ul className="space-y-2 text-sm text-gray-300 text-left">
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-green-400" />6 Frascos (180 cápsulas)
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />
+                        <strong className="text-white">5 Frascos (150 cápsulas)</strong>
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-green-400" />7 dias de garantia
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />
+                        <strong className="text-yellow-400">70% DE DESCONTO</strong>
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-green-400" />
-                        Frete GRÁTIS + Prioritário
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />7 dias de garantia
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-green-400" />
-                        <strong>BÔNUS:</strong> Kit Completo
+                        <CheckCircle className="h-4 w-4 text-green-400 flex-shrink-0" />
+                        Entrega discreta
                       </li>
                       <li className="flex items-center gap-2">
-                        <CheckCircle className="h-4 w-4 text-yellow-400" />
+                        <CheckCircle className="h-4 w-4 text-yellow-400 flex-shrink-0" />
                         <strong className="text-yellow-400">PAGUE AO RECEBER</strong>
                       </li>
                     </ul>
                     <Button
                       variant="outline"
-                      className="w-full border-yellow-400 text-yellow-400 hover:bg-yellow-900/20 hover:scale-105 transition-all duration-300"
+                      className="w-full border-red-400 text-red-400 hover:bg-red-900/20 hover:scale-105 transition-all duration-300"
+                      onClick={() => trackPurchaseClick("vip", "buy_vip", "QUERO SER VIP")}
                     >
                       QUERO SER VIP
                     </Button>
@@ -865,88 +998,34 @@ export default function FirePowerLanding() {
           </div>
         </section>
 
-        {/* Final CTA */}
-        <section className="w-full py-12 md:py-24 lg:py-32 bg-gradient-to-r from-red-600/90 to-black backdrop-blur-sm">
-          <div className="container px-4 md:px-6">
-            <div className="flex flex-col items-center justify-center space-y-4 text-center text-white animate-in fade-in slide-in-from-bottom duration-700">
-              <div className="space-y-2">
-                <h2 className="text-3xl font-bold tracking-tighter sm:text-5xl drop-shadow-2xl">
-                  NÃO PERCA MAIS TEMPO!
-                </h2>
-                <p className="max-w-[600px] text-red-100 md:text-xl/relaxed font-medium">
-                  Sua parceira está esperando o HOMEM que você pode ser. Garante já seu Fire Power com{" "}
-                  <strong>7 DIAS DE GARANTIA TOTAL!</strong>
-                </p>
-              </div>
-              <div className="w-full max-w-sm space-y-2">
-                <Button
-                  size="lg"
-                  className="w-full bg-gradient-to-r from-yellow-500 to-yellow-600 hover:from-yellow-600 hover:to-yellow-700 text-black font-bold text-xl py-8 animate-pulse hover:scale-105 transition-all duration-300 shadow-xl shadow-yellow-500/30"
-                  onClick={() => scrollToSection("offer")}
-                >
-                  QUERO MINHA POTÊNCIA AGORA!
-                  <ArrowRight className="ml-2 h-6 w-6" />
-                </Button>
-                <p className="text-xs text-red-100">
-                  ✅ Entrega discreta ✅ Pague ao receber ✅ 7 dias de garantia ✅ Zero risco
-                </p>
-              </div>
+        {/* Footer */}
+        <footer className="w-full py-6 px-4 md:px-6 border-t border-red-800/50 bg-black/90 backdrop-blur-md">
+          <div className="container flex flex-col md:flex-row items-center justify-between gap-4">
+            <p className="text-xs text-gray-400">
+              &copy; 2024 Fire Power. Todos os direitos reservados. Produto destinado a maiores de 18 anos.
+            </p>
+            <div className="flex gap-4">
+              <Link
+                href="/termos"
+                className="text-xs text-gray-400 hover:text-red-400 transition-colors"
+                onClick={() => trackButtonClick("footer_termos", "Termos de Uso")}
+              >
+                Termos de Uso
+              </Link>
+              <Link
+                href="/privacidade"
+                className="text-xs text-gray-400 hover:text-red-400 transition-colors"
+                onClick={() => trackButtonClick("footer_privacidade", "Política de Privacidade")}
+              >
+                Política de Privacidade
+              </Link>
             </div>
           </div>
-        </section>
+        </footer>
       </main>
 
-      {/* Footer */}
-      <footer className="flex flex-col gap-2 sm:flex-row py-6 w-full shrink-0 items-center px-4 md:px-6 border-t border-red-800/50 bg-black/90 backdrop-blur-sm">
-        <p className="text-xs text-gray-500">© 2024 Fire Power. Todos os direitos reservados.</p>
-        <nav className="sm:ml-auto flex gap-4 sm:gap-6">
-          <Link
-            href="#"
-            className="text-xs hover:underline underline-offset-4 text-gray-500 hover:text-red-400 transition-colors"
-          >
-            Termos de Uso
-          </Link>
-          <Link
-            href="#"
-            className="text-xs hover:underline underline-offset-4 text-gray-500 hover:text-red-400 transition-colors"
-          >
-            Privacidade
-          </Link>
-          <Link
-            href="#"
-            className="text-xs hover:underline underline-offset-4 text-gray-500 hover:text-red-400 transition-colors"
-          >
-            Contato
-          </Link>
-        </nav>
-      </footer>
-
-      {/* Modal de Imagem */}
-      <Dialog open={showImageModal} onOpenChange={setShowImageModal}>
-        <DialogContent className="bg-black/95 border-green-600/50 text-white max-w-2xl backdrop-blur-md">
-          <DialogHeader>
-            <DialogTitle className="text-green-400 text-xl font-bold">Depoimento Real - WhatsApp</DialogTitle>
-          </DialogHeader>
-          {selectedImage && (
-            <div className="space-y-4">
-              <Image
-                src={selectedImage.src || "/placeholder.svg"}
-                width="600"
-                height="800"
-                alt={selectedImage.alt}
-                className="rounded-lg border border-green-600/50 w-full h-auto shadow-xl shadow-green-600/20"
-              />
-              <div className="bg-green-900/20 border border-green-600/50 rounded-lg p-4 backdrop-blur-sm">
-                <p className="text-green-300 font-bold text-center text-lg">"{selectedImage.message}"</p>
-                <p className="text-gray-300 text-sm text-center mt-2">Cliente real - Conversa do WhatsApp</p>
-              </div>
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
-
       {/* Modal de Inatividade */}
-      <Dialog open={showInactivityModal} onOpenChange={setShowInactivityModal}>
+      <Dialog open={showInactivityModal} onOpenChange={(open) => !open && handleInactivityModalClose()}>
         <DialogContent className="bg-black/95 border-red-600/50 text-white max-w-md backdrop-blur-md">
           <DialogHeader>
             <DialogTitle className="text-red-400 text-xl font-bold">🔥 ESPERA AÍ!</DialogTitle>
@@ -955,13 +1034,26 @@ export default function FirePowerLanding() {
             <p className="text-gray-300">
               Você está prestes a perder a <strong className="text-red-400">MAIOR OPORTUNIDADE</strong> da sua vida!
             </p>
-            <div className="bg-red-900/30 border border-red-600/50 rounded-lg p-4 backdrop-blur-sm">
+
+            {/* Contador de Oferta Limitada */}
+            <div className="bg-gradient-to-r from-red-600/30 to-red-800/30 border border-red-500/50 rounded-lg p-4 backdrop-blur-sm">
+              <div className="text-center">
+                <h4 className="text-yellow-400 font-bold text-lg mb-2 animate-pulse">⏰ OFERTA EXPIRA EM:</h4>
+                <div className="text-4xl font-bold text-white font-mono tracking-wider mb-2">
+                  {String(inactivityOfferTime.minutes).padStart(2, "0")}:
+                  {String(inactivityOfferTime.seconds).padStart(2, "0")}
+                </div>
+                <p className="text-red-300 text-sm animate-pulse">Esta janela se fechará automaticamente!</p>
+              </div>
+            </div>
+
+            <div className="bg-red-900/30 border border-red-600 rounded-lg p-4">
               <h3 className="font-bold text-yellow-400 mb-2">OFERTA ESPECIAL PARA VOCÊ:</h3>
               <p className="text-sm text-gray-300 mb-3">
                 Leve 3 frascos por apenas <span className="text-2xl font-bold text-white">R$ 147</span>
                 <span className="line-through text-gray-500 ml-2">R$ 291</span>
               </p>
-              <p className="text-xs text-red-300">⏰ Esta oferta expira em 10 minutos!</p>
+              <p className="text-xs text-red-300">💥 50% DE DESCONTO - APENAS AGORA!</p>
             </div>
             <div className="flex gap-2">
               <Button
@@ -985,8 +1077,10 @@ export default function FirePowerLanding() {
         </DialogContent>
       </Dialog>
 
+
+
       {/* Modal de Feedback */}
-      <Dialog open={showFeedbackModal} onOpenChange={setShowFeedbackModal}>
+      <Dialog open={showFeedbackModal} onOpenChange={handleFeedbackModalClose}>
         <DialogContent className="bg-black/95 border-red-600/50 text-white max-w-lg backdrop-blur-md">
           <DialogHeader>
             <DialogTitle className="text-red-400 text-xl font-bold">Antes de sair...</DialogTitle>
@@ -1031,12 +1125,35 @@ export default function FirePowerLanding() {
                   <SelectValue placeholder="Estado" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="SP">SP</SelectItem>
-                  <SelectItem value="RJ">RJ</SelectItem>
-                  <SelectItem value="MG">MG</SelectItem>
-                  <SelectItem value="RS">RS</SelectItem>
-                  {/* Adicionar outros estados */}
+                  <SelectItem value="AC">Acre (AC)</SelectItem>
+                  <SelectItem value="AL">Alagoas (AL)</SelectItem>
+                  <SelectItem value="AP">Amapá (AP)</SelectItem>
+                  <SelectItem value="AM">Amazonas (AM)</SelectItem>
+                  <SelectItem value="BA">Bahia (BA)</SelectItem>
+                  <SelectItem value="CE">Ceará (CE)</SelectItem>
+                  <SelectItem value="DF">Distrito Federal (DF)</SelectItem>
+                  <SelectItem value="ES">Espírito Santo (ES)</SelectItem>
+                  <SelectItem value="GO">Goiás (GO)</SelectItem>
+                  <SelectItem value="MA">Maranhão (MA)</SelectItem>
+                  <SelectItem value="MT">Mato Grosso (MT)</SelectItem>
+                  <SelectItem value="MS">Mato Grosso do Sul (MS)</SelectItem>
+                  <SelectItem value="MG">Minas Gerais (MG)</SelectItem>
+                  <SelectItem value="PA">Pará (PA)</SelectItem>
+                  <SelectItem value="PB">Paraíba (PB)</SelectItem>
+                  <SelectItem value="PR">Paraná (PR)</SelectItem>
+                  <SelectItem value="PE">Pernambuco (PE)</SelectItem>
+                  <SelectItem value="PI">Piauí (PI)</SelectItem>
+                  <SelectItem value="RJ">Rio de Janeiro (RJ)</SelectItem>
+                  <SelectItem value="RN">Rio Grande do Norte (RN)</SelectItem>
+                  <SelectItem value="RS">Rio Grande do Sul (RS)</SelectItem>
+                  <SelectItem value="RO">Rondônia (RO)</SelectItem>
+                  <SelectItem value="RR">Roraima (RR)</SelectItem>
+                  <SelectItem value="SC">Santa Catarina (SC)</SelectItem>
+                  <SelectItem value="SP">São Paulo (SP)</SelectItem>
+                  <SelectItem value="SE">Sergipe (SE)</SelectItem>
+                  <SelectItem value="TO">Tocantins (TO)</SelectItem>
                 </SelectContent>
+
               </Select>
             </div>
 
@@ -1100,6 +1217,41 @@ export default function FirePowerLanding() {
         </DialogContent>
       </Dialog>
 
+      {/* Modal de Imagem do Depoimento */}
+      
+     <Dialog open={showImageModal} onOpenChange={(open) => !open && closeImageModal()}>
+  <DialogContent className="max-w-3xl max-h-[90vh] bg-black/90 border-green-500 text-white backdrop-blur-md p-2 overflow-y-auto">
+    <DialogHeader>
+      <DialogTitle>
+        <span className="sr-only">Imagem do Depoimento</span>
+      </DialogTitle>
+    </DialogHeader>
+
+    <button
+      className="absolute top-3 right-3 p-1 rounded-full hover:bg-gray-700/50 transition-colors z-10"
+      onClick={closeImageModal}
+    >
+      <X className="h-6 w-6 text-gray-300" />
+    </button>
+
+    {selectedImage && (
+      <div className="flex flex-col items-center mt-4">
+        <Image
+          src={selectedImage.src}
+          width={600}
+          height={1000}
+          alt={selectedImage.alt}
+          className="rounded-lg max-w-full h-auto object-contain"
+        />
+        <p className="mt-3 text-center text-sm text-gray-300 bg-black/70 px-3 py-1 rounded-md">
+          "{selectedImage.message}"
+        </p>
+      </div>
+    )}
+  </DialogContent>
+</Dialog>
+
+
       <style jsx global>{`
         @keyframes float {
           0%, 100% { transform: translateY(0px); }
@@ -1134,3 +1286,4 @@ export default function FirePowerLanding() {
     </div>
   )
 }
+
